@@ -1,27 +1,24 @@
 import React, { PropTypes, Component } from 'react';
+import { composeWithTracker } from 'react-komposer';
 
 const Subs = new SubsManager();
 
-const DocumentContainer = React.createClass({
-
-  mixins: [ReactMeteorData],
+const documentComposer = (props, onData) => {
   
-  getMeteorData() {
+  // subscribe if necessary
+  const subscribeFunction = props.cacheSubscription ? Subs.subscribe : Meteor.subscribe;
+  const subscription = subscribeFunction(props.publication, props.terms);
 
-    // subscribe if necessary
-    if (this.props.publication) {
-      const subscribeFunction = this.props.cacheSubscription ? Subs.subscribe : Meteor.subscribe;
-      const subscription = subscribeFunction(this.props.publication, this.props.terms);
-    }
-
-    const collection = this.props.collection;
-    const document = collection.findOne(this.props.selector);
+  // when the subscription is ready, "start the process" of sending data to the composed component
+  if (subscription.ready()) {
+    const collection = props.collection;
+    const document = collection.findOne(props.selector);
 
     // look for any specified joins
-    if (document && this.props.joins) {
+    if (document && props.joins) {
 
       // loop over each join
-      this.props.joins.forEach(join => {
+      props.joins.forEach(join => {
 
         if (join.foreignProperty) {
           // foreign join (e.g. comments belonging to a post)
@@ -48,44 +45,34 @@ const DocumentContainer = React.createClass({
         }
 
       });
-
     }
 
+    // build the final data object
     const data = {
-      currentUser: Meteor.user()
-    }
+      currentUser: Meteor.user(),
+      [props.documentPropName]: document,
+    };
 
-    data[this.props.documentPropName] = document;
-
-    return data;
-  },
-
-  render() {
-    const loadingComponent = this.props.loading ? this.props.loading : <p>Loading…</p>
-
-    if (this.data[this.props.documentPropName]) {
-      if (this.props.component) {
-        const Component = this.props.component;
-        return <Component {...this.props.componentProps} {...this.data} collection={this.props.collection} />;
-      } else {
-        return React.cloneElement(this.props.children, { ...this.props.componentProps, ...this.data, collection: this.props.collection });
-      }
-    } else {
-      return loadingComponent;
-    }
+    // send it to the composed component
+    onData(null, data);
   }
+};
 
-});
+const DocumentContainer = (props) => {
+  const loadingComponent = props.loading ? props.loading : () => (<p>Loading…</p>);
 
+  const ComposedComponent = composeWithTracker(documentComposer, loadingComponent)(props.component);
+  return <ComposedComponent {...props} />;
+};
 
 DocumentContainer.propTypes = {
   collection: React.PropTypes.object.isRequired,
+  component: React.PropTypes.func.isRequired,
+  publication: React.PropTypes.string.isRequired,
   selector: React.PropTypes.object.isRequired,
-  publication: React.PropTypes.string,
   terms: React.PropTypes.any,
   joins: React.PropTypes.array,
   loading: React.PropTypes.func,
-  component: React.PropTypes.func,
   componentProps: React.PropTypes.object,
   documentPropName: React.PropTypes.string,
   cacheSubscription: React.PropTypes.bool
