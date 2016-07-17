@@ -1,64 +1,56 @@
 import { Meteor } from 'meteor/meteor';
-import { createContainer } from 'meteor/react-meteor-data';
+import { composeWithTracker } from 'react-komposer';
 import React, { PropTypes, Component } from 'react';
 import CursorCounts from './cursorcounts.js';
 import Utils from './utils.js'
 
 const Subs = new SubsManager();
 
-const ListContainer = React.createClass({
+const listComposer = (props, onData) => {
 
-  getInitialState() {
-    return {
-      limit: this.props.limit
-    };
-  },
+  let terms;
 
-  mixins: [ReactMeteorData],
-  
-  getMeteorData() {
+  // initialize data object with current user, and default to data being ready
+  let data = {
+    currentUser: Meteor.user(),
+    ready: true
+  };
 
-    let terms;
+  // subscribe if needed. Note: always subscribe first, otherwise 
+  // it won't work when server-side rendering with FlowRouter SSR
+  if (props.publication) {
+    terms = props.terms ? {...props.terms} : {};
 
-    // initialize data object with current user, and default to data being ready
-    let data = {
-      currentUser: Meteor.user(),
-      ready: true
-    };
-
-    // subscribe if needed. Note: always subscribe first, otherwise 
-    // it won't work when server-side rendering with FlowRouter SSR
-    if (this.props.publication) {
-      terms = _.clone(this.props.terms) || {};
-
-      // set subscription terms limit based on component state
-      if (!terms.options) {
-        terms.options = {}
-      }
-      terms.options.limit = this.state.limit;
-      terms.listId = this.props.listId;
-
-      const subscribeFunction = this.props.cacheSubscription ? Subs.subscribe : Meteor.subscribe;
-      const subscription = subscribeFunction(this.props.publication, terms);
-      data.ready = subscription.ready();
+    // set subscription terms limit based on component state
+    if (!terms.options) {
+      terms.options = {}
     }
 
-    const selector = this.props.selector || {};
-    const options = {...this.props.options, limit: this.state.limit}; 
-    const cursor = this.props.collection.find(selector, options);
+    terms.options.limit = props.limit;
+    terms.listId = props.listId;
+
+    const subscribeFunction = props.cacheSubscription ? Subs.subscribe : Meteor.subscribe;
+    const subscription = subscribeFunction(props.publication, terms);
+    data.ready = subscription.ready();
+  }
+
+  if (data.ready) {
+    const selector = props.selector || {};
+    const options = {...props.options, limit: props.limit}; 
+    const cursor = props.collection.find(selector, options);
 
     data.count = cursor.count();
 
     let results = cursor.fetch(); 
 
     // look for any specified joins
-    if (this.props.joins) {
+    if (props.joins) {
 
       // loop over each document in the results
       results.forEach(document => {
 
         // loop over each join
-        this.props.joins.forEach(join => {
+        props.joins.forEach(join => {
 
           const collection = typeof join.collection === "function" ? join.collection() : join.collection;
           const joinLimit = join.limit ? join.limit : 0;
@@ -95,16 +87,16 @@ const ListContainer = React.createClass({
     }
     
     // transform list into tree
-    if (this.props.parentProperty) {
-      results = Utils.unflatten(results, "_id", this.props.parentProperty);
+    if (props.parentProperty) {
+      results = Utils.unflatten(results, "_id", props.parentProperty);
     }
 
     // by default, always assume there's more to come while data isn't ready, and then
     // just keep showing "load more" as long as we get back as many items as we asked for
     
-    data.hasMore = !data.ready || data.count === this.state.limit;
+    data.hasMore = !data.ready || data.count === props.limit;
 
-    if (this.props.increment === 0) {
+    if (props.increment === 0) {
 
       // if increment is set to 0, hasMore is always false. 
       data.hasMore = false;
@@ -121,40 +113,51 @@ const ListContainer = React.createClass({
     //   data.totalCount = totalCount;
     //   data.hasMore = data.count < data.totalCount;
 
-    } else if (typeof Counts !== "undefined" && Counts.get && Counts.get(this.props.listId)) {
+    } else if (typeof Counts !== "undefined" && Counts.get && Counts.get(props.listId)) {
 
       // or, use publish-counts package if available:
       // (currently only works on client)
-      data.totalCount = Counts.get(this.props.listId);
+      data.totalCount = Counts.get(props.listId);
       data.hasMore = data.count < data.totalCount;
 
     }
 
-    data[this.props.resultsPropName] = results;
+    data[props.resultsPropName] = results;
 
-    return data;
-  },
+    onData(null, data);
+  }
+};
+
+class ListContainer extends Component {
+
+  constructor(...args) {
+    super(...args);
+    
+    this.loadMore = this.loadMore.bind(this);
+
+    this.state = {
+      limit: this.props.limit
+    };
+  }
 
   loadMore(event) {
     event.preventDefault();
     this.setState({
-      limit: this.state.limit+this.props.increment
+      limit: this.state.limit + this.props.increment
     });
-  },
-
-  render() {
-    if (this.props.component) {
-      const Component = this.props.component;
-      return <Component {...this.props.componentProps} {...this.data} loadMore={this.loadMore} />;
-    } else {
-      return React.cloneElement(this.props.children, { ...this.props.componentProps, ...this.data, loadMore: this.loadMore});
-    }
   }
 
-});
+  render() {
+    const loadingComponent = this.props.loading ? this.props.loading : () => (<p>Loading…</p>);
+    const ComposedComponent = composeWithTracker(listComposer, loadingComponent)(this.props.component);
+    return <ComposedComponent {...this.props} limit={this.state.limit} loadMore={this.loadMore} />;
+  }
+
+}
 
 ListContainer.propTypes = {
   collection: React.PropTypes.object.isRequired,  // the collection to paginate
+  component: React.PropTypes.func.isRequired,     // the component to be wrapped
   selector: React.PropTypes.object,               // the selector used in collection.find()
   options: React.PropTypes.object,                // the options used in collection.find()
   publication: React.PropTypes.string,            // the publication to subscribe to
@@ -163,7 +166,6 @@ ListContainer.propTypes = {
   increment: React.PropTypes.number,              // the limit used to increase pagination
   joins: React.PropTypes.array,                   // joins to apply to the results
   parentProperty: React.PropTypes.string,         // if provided, use to generate tree
-  component: React.PropTypes.func,                // another way to pass a child component
   componentProps: React.PropTypes.object,         // the component's properties
   resultsPropName: React.PropTypes.string,        // if provided, the name of the property to use for results
   cacheSubscription: React.PropTypes.bool,        // set to true to cache subscription using Subs Manager
